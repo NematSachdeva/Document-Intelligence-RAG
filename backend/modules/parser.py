@@ -7,6 +7,7 @@ import fitz  # PyMuPDF
 import pytesseract
 from PIL import Image
 import io
+import os
 from typing import Dict, List, Tuple
 
 
@@ -24,15 +25,27 @@ def extract_text_with_ocr(page) -> str:
     Used as fallback for scanned/image-based pages.
     """
     try:
-        # Convert page to image
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better OCR
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        # Convert page to image with higher DPI for better OCR accuracy
+        pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))  # 3x zoom for better OCR
+        
+        # Convert to PIL Image
+        img_data = pix.tobytes("ppm")
+        img = Image.open(io.BytesIO(img_data))
+        
+        # Configure pytesseract for better results
+        custom_config = r'--oem 3 --psm 6'
         
         # Run OCR
-        text = pytesseract.image_to_string(img)
+        text = pytesseract.image_to_string(img, config=custom_config)
+        
+        if text.strip():
+            print(f"  ✓ OCR extracted {len(text.strip())} characters")
+        else:
+            print(f"  ⚠️  OCR returned empty text")
+        
         return text
     except Exception as e:
-        print(f"OCR failed: {e}")
+        print(f"  ✗ OCR failed: {e}")
         return ""
 
 
@@ -48,17 +61,29 @@ def parse_pdf(file_path: str) -> Dict[int, str]:
     
     try:
         pdf_document = fitz.open(file_path)
+        total_pages = len(pdf_document)
+        print(f"Processing PDF with {total_pages} pages...")
         
-        for page_num in range(len(pdf_document)):
+        for page_num in range(total_pages):
             page = pdf_document[page_num]
             
             # Try standard text extraction first
             text = page.get_text()
+            text_length = len(text.strip())
+            
+            print(f"Page {page_num + 1}: Extracted {text_length} characters via PyMuPDF")
             
             # If page appears to be scanned, use OCR
             if is_scanned_page(text):
-                print(f"Page {page_num + 1} detected as scanned, running OCR...")
-                text = extract_text_with_ocr(page)
+                print(f"  → Page {page_num + 1} detected as scanned, running OCR...")
+                ocr_text = extract_text_with_ocr(page)
+                
+                # Use OCR text if it's better than PyMuPDF extraction
+                if len(ocr_text.strip()) > text_length:
+                    text = ocr_text
+                    print(f"  → Using OCR text ({len(ocr_text.strip())} chars)")
+                else:
+                    print(f"  → OCR didn't improve extraction, using PyMuPDF")
             
             page_texts[page_num + 1] = text  # 1-indexed page numbers
         

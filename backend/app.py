@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from typing import Dict, List
 import os
 import shutil
+import uuid
 from dotenv import load_dotenv
 
 # Import modules
@@ -113,12 +114,12 @@ async def upload_pdf(file: UploadFile = File(...)):
         if file.size and file.size > MAX_FILE_SIZE:
             raise HTTPException(status_code=413, detail="File too large")
         
-        # Generate document ID
-        document_id = file.filename.replace(".pdf", "").replace(" ", "_")
+        # Generate document ID (unique for each PDF)
+        document_id = f"{file.filename.replace('.pdf', '').replace(' ', '_')}_{uuid.uuid4().hex[:8]}"
         file_path = os.path.join(UPLOAD_DIR, f"{document_id}.pdf")
         
-        # Use Chroma Cloud collection name
-        collection_name = os.getenv("CHROMA_COLLECTION_NAME", "DocumentIntelligence")
+        # Create unique collection name for this document
+        collection_name = f"doc_{document_id}"
         
         # Save file
         with open(file_path, "wb") as f:
@@ -176,7 +177,7 @@ async def ask_question(request: QuestionRequest):
     """
     Ask a question about an uploaded document.
     
-    1. Retrieve relevant chunks using semantic search
+    1. Retrieve relevant chunks using semantic search from document's collection
     2. Build context
     3. Generate answer with LLM
     4. Return answer with citations
@@ -189,9 +190,12 @@ async def ask_question(request: QuestionRequest):
         if document_id not in documents_metadata:
             raise HTTPException(status_code=404, detail="Document not found")
         
-        # Retrieve similar chunks
+        # Get the collection name for this document
+        collection_name = documents_metadata[document_id]["collection_name"]
+        
+        # Retrieve similar chunks from this document's collection
         chunks, metadatas, distances = embedding_manager.retrieve_similar_chunks(
-            collection_name=os.getenv("CHROMA_COLLECTION_NAME", "DocumentIntelligence"),
+            collection_name=collection_name,
             query=question,
             top_k=5
         )
@@ -258,13 +262,16 @@ async def list_documents():
 
 @app.delete("/documents/{document_id}")
 async def delete_document(document_id: str):
-    """Delete a document and its embeddings."""
+    """Delete a document and its embeddings from its collection."""
     try:
         if document_id not in documents_metadata:
             raise HTTPException(status_code=404, detail="Document not found")
         
-        # Delete from ChromaDB
-        embedding_manager.delete_collection(document_id)
+        # Get the collection name for this document
+        collection_name = documents_metadata[document_id]["collection_name"]
+        
+        # Delete the collection from ChromaDB
+        embedding_manager.delete_collection(collection_name)
         
         # Delete from metadata
         del documents_metadata[document_id]
