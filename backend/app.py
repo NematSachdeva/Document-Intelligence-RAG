@@ -123,7 +123,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     1. Delete previous active document if exists
     2. Save PDF
     3. Extract text with OCR fallback
-    4. Create chunks
+    4. Create chunks (optimized to reduce embeddings count)
     5. Generate embeddings
     6. Generate summary
     """
@@ -171,9 +171,12 @@ async def upload_pdf(file: UploadFile = File(...)):
         page_texts = get_page_wise_text(file_path)
         num_pages = len(page_texts)
         
-        # Create chunks
-        chunks = chunk_text(page_texts, chunk_size=500, overlap=100)
+        # Create chunks with larger size and smaller overlap to reduce embeddings count
+        # This keeps under Chroma Cloud free tier quota (300 records)
+        chunks = chunk_text(page_texts, chunk_size=1000, overlap=50)
         texts, metadatas, ids = get_chunks_with_metadata(chunks)
+        
+        print(f"Creating {len(chunks)} embeddings for document")
         
         # Store embeddings in Chroma Cloud
         embedding_manager.store_embeddings(
