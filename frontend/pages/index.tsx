@@ -17,6 +17,21 @@ import {
   Document,
 } from '../lib/api'
 
+// API function for analyze
+const analyzePolicy = async (document_id: string): Promise<Blob> => {
+  const response = await fetch(`http://localhost:8000/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ document_id }),
+  })
+
+  if (!response.ok) {
+    throw new Error('Failed to analyze policy')
+  }
+
+  return response.blob()
+}
+
 type AppState = 'upload' | 'chat'
 
 export default function Home() {
@@ -29,6 +44,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string>('')
   const [apiError, setApiError] = useState<string>('')
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false)
 
   // Check API health on mount
   useEffect(() => {
@@ -157,6 +173,35 @@ export default function Home() {
     setError('')
   }
 
+  const handleGenerateReport = async () => {
+    if (!selectedDocumentId) {
+      setError('No document selected')
+      return
+    }
+
+    setIsGeneratingReport(true)
+    setError('')
+
+    try {
+      const pdfBlob = await analyzePolicy(selectedDocumentId)
+      
+      // Create download link
+      const url = window.URL.createObjectURL(pdfBlob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `Insurance_Policy_Analysis_Report.pdf`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+    } catch (err: any) {
+      setError('Failed to generate report. Please try again.')
+      console.error('Report generation error:', err)
+    } finally {
+      setIsGeneratingReport(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
       {/* Header */}
@@ -280,6 +325,13 @@ export default function Home() {
 
                 {/* Actions */}
                 <div className="bg-white rounded-lg p-6 border border-gray-200 space-y-3">
+                  <button
+                    onClick={handleGenerateReport}
+                    disabled={isGeneratingReport || !selectedDocumentId}
+                    className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium"
+                  >
+                    {isGeneratingReport ? 'Generating Report...' : '📄 Generate Insurance Report'}
+                  </button>
                   <button
                     onClick={handleNewDocument}
                     disabled={isLoading}

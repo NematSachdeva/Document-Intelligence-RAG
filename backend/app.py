@@ -6,11 +6,13 @@ Orchestrates PDF processing, embedding generation, and QA.
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Dict, List
 import os
 import shutil
 import uuid
+import io
 from dotenv import load_dotenv
 
 # Import modules
@@ -19,6 +21,8 @@ from modules.chunker import chunk_text, get_chunks_with_metadata
 from modules.embeddings import EmbeddingManager
 from modules.qa import QAEngine
 from modules.summarizer import Summarizer
+from modules.insurance_analyzer import InsuranceAnalyzer
+from modules.report_generator import ReportGenerator
 
 # Load environment variables
 load_dotenv()
@@ -50,9 +54,13 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 embedding_manager = EmbeddingManager()
 qa_engine = QAEngine()
 summarizer = Summarizer()
+insurance_analyzer = InsuranceAnalyzer()
+report_generator = ReportGenerator()
 
 # Store document metadata in memory (in production, use database)
 documents_metadata = {}
+# Track the active document (single document mode for insurance policies)
+active_document_id = None
 
 
 # Request/Response Models
@@ -83,6 +91,16 @@ class UploadResponse(BaseModel):
     success: bool
 
 
+class AnalysisRequest(BaseModel):
+    document_id: str
+
+
+class AnalysisResponse(BaseModel):
+    filename: str
+    analysis: Dict
+    success: bool
+
+
 # API Endpoints
 
 @app.get("/")
@@ -99,13 +117,18 @@ async def root():
 async def upload_pdf(file: UploadFile = File(...)):
     """
     Upload and process a PDF document.
+    For insurance policies: only one document can be active at a time.
+    When a new PDF is uploaded, the previous document is deleted.
     
-    1. Save PDF
-    2. Extract text with OCR fallback
-    3. Create chunks
-    4. Generate embeddings
-    5. Generate summary
+    1. Delete previous active document if exists
+    2. Save PDF
+    3. Extract text with OCR fallback
+    4. Create chunks
+    5. Generate embeddings
+    6. Generate summary
     """
+    global active_document_id
+    
     try:
         # Validate file
         if not file.filename.endswith(".pdf"):
@@ -113,6 +136,22 @@ async def upload_pdf(file: UploadFile = File(...)):
         
         if file.size and file.size > MAX_FILE_SIZE:
             raise HTTPException(status_code=413, detail="File too large")
+        
+        # Delete previous active document and its Chroma collection
+        if active_document_id and active_document_id in documents_metadata:
+            print(f"Deleting previous active document: {active_document_id}")
+            try:
+                collection_name = documents_metadata[active_document_id]["collection_name"]
+                embedding_manager.delete_collection(collection_name)
+                
+                # Delete file
+                file_path = os.path.join(UPLOAD_DIR, f"{active_document_id}.pdf")
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                
+                del documents_metadata[active_document_id]
+            except Exception as e:
+                print(f"Warning: Could not delete previous document: {str(e)}")
         
         # Generate document ID (unique for each PDF)
         document_id = f"{file.filename.replace('.pdf', '').replace(' ', '_')}_{uuid.uuid4().hex[:8]}"
@@ -148,14 +187,17 @@ async def upload_pdf(file: UploadFile = File(...)):
         full_text = " ".join(page_texts.values())
         summary_result = summarizer.generate_summary(full_text)
         
-        # Store metadata
+        # Store metadata and set as active document
         documents_metadata[document_id] = {
             "filename": file.filename,
             "pages": num_pages,
             "chunks": len(chunks),
             "summary": summary_result,
-            "collection_name": collection_name
+            "collection_name": collection_name,
+            "full_text": full_text
         }
+        
+        active_document_id = document_id
         
         return UploadResponse(
             document_id=document_id,
@@ -287,6 +329,87 @@ async def delete_document(document_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
+
+
+@app.post("/analyze")
+async def analyze_insurance_policy(request: AnalysisRequest):
+    """
+    Analyze insurance policy and generate downloadable PDF report.
+    
+    1. Get document and its full text
+    2. Extract insurance policy information using InsuranceAnalyzer
+    3. Generate professional PDF report
+    4. Return PDF file for download
+    """
+    try:
+        document_id = request.document_id
+        
+        # Validate document exists
+        if document_id not in documents_metadata:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        metadata = documents_metadata[document_id]
+        full_text = metadata.get("full_text", "")
+        filename = metadata["filename"]
+        
+        if not full_text:
+            raise HTTPException(status_code=400, detail="Document text not available")
+        
+        print(f"Analyzing insurance policy: {document_id}")
+        
+        # Extract insurance policy information
+        analysis = insurance_analyzer.extract_policy_information(full_text)
+        
+        # Get summary for report
+        summary_text = metadata["summary"].get("summary", "") if metadata.get("summary") else ""
+        
+        # Generate PDF report
+        pdf_bytes = report_generator.generate_policy_report(
+            filename=filename,
+            analysis_data=analysis,
+            summary_text=summary_text
+        )
+        
+        # Save analysis in metadata
+        metadata["analysis"] = analysis
+        
+        # Return PDF file
+        clean_filename = filename.replace('.pdf', '')
+        return FileResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            filename=f"{clean_filename}_Analysis_Report.pdf"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error analyzing document: {str(e)}")
+
+
+@app.get("/analysis/{document_id}")
+async def get_analysis(document_id: str):
+    """Get the stored analysis data for a document (JSON)."""
+    try:
+        if document_id not in documents_metadata:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        metadata = documents_metadata[document_id]
+        
+        if "analysis" not in metadata:
+            raise HTTPException(status_code=404, detail="No analysis available. Please run analyze endpoint first.")
+        
+        return {
+            "document_id": document_id,
+            "filename": metadata["filename"],
+            "analysis": metadata["analysis"],
+            "success": True
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving analysis: {str(e)}")
 
 
 @app.get("/health")
