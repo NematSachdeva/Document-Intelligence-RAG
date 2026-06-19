@@ -1,21 +1,22 @@
 """
-Insurance Policy Analyzer Module
-Extracts key insurance policy information and generates analysis reports.
+Insurance Policy Analyzer Module - Enhanced Version
+Generates professional insurance consultant-quality reports with section-specific RAG retrieval.
+Single LLM call approach - no JSON parsing from LLM output.
 """
 
 from typing import Dict, List
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
 import os
-import json
 
 
 class InsuranceAnalyzer:
-    """Analyzes insurance policy documents and extracts key information."""
+    """Analyzes insurance policies using section-specific RAG + markdown generation."""
     
-    def __init__(self):
-        """Initialize analyzer with Groq LLM."""
+    def __init__(self, embedding_manager=None):
+        """Initialize analyzer with Groq LLM and embedding manager for RAG."""
         self.llm = self._initialize_llm()
+        self.embedding_manager = embedding_manager
         
     def _initialize_llm(self):
         """Initialize the Groq LLM."""
@@ -26,67 +27,226 @@ class InsuranceAnalyzer:
         return ChatGroq(
             model="llama-3.1-8b-instant",
             groq_api_key=api_key,
-            temperature=0.1  # Lower temperature for accuracy
+            temperature=0.2
         )
     
-    def extract_policy_information(self, document_text: str) -> Dict:
+    def _retrieve_section_chunks(self, collection_name: str, section_queries: Dict[str, List[str]], top_k: int = 5) -> Dict[str, str]:
         """
-        Extract all insurance policy fields from document.
+        Retrieve section-specific relevant chunks from Chroma.
         
         Args:
-            document_text: Full document text
+            collection_name: Chroma collection name
+            section_queries: Dict mapping section names to query lists
+            top_k: Number of top results per query
             
         Returns:
-            Dict with all extracted insurance policy information
+            Dict mapping section names to merged context
         """
-        system_prompt = """You are an expert insurance policy analyst. Extract the following information from the insurance policy document.
+        section_context = {}
         
-IMPORTANT INSTRUCTIONS:
-1. Extract EXACT values from the document, do not infer or assume
-2. If a field is not mentioned, write "Not specified in document"
-3. For each field, include the page number if available (e.g., "Page 2")
-4. Write all amounts in plain language (e.g., "Rs. 100,000" or "$50,000")
-5. Be precise and factual
-6. Return response as JSON format with the fields below
-
-Extract these 13 key insurance policy fields:
-1. Policy Overview - Brief description of the policy
-2. Coverage Amount - Total coverage/sum insured
-3. Premium Amount - Annual or monthly premium
-4. Policy Duration - How long the policy is valid
-5. Covered Items - What is covered under the policy
-6. Exclusions - What is NOT covered
-7. Waiting Periods - Any waiting periods before coverage starts
-8. Deductibles - Amount the policyholder must pay
-9. Co-pay Clauses - Shared payment terms
-10. Renewal Clauses - How to renew the policy
-11. Cancellation Clauses - How to cancel and conditions
-12. Major Risks - Main risks covered
-13. Overall Assessment - Your professional assessment of the policy (understandability, clarity, value)
-
-Return JSON with these exact keys."""
+        if not self.embedding_manager:
+            return section_context
         
-        user_message = f"""Please analyze this insurance policy document and extract all required information.
+        try:
+            for section_name, queries in section_queries.items():
+                all_chunks = []
+                
+                for query in queries:
+                    try:
+                        chunks, metadatas, distances = self.embedding_manager.retrieve_similar_chunks(
+                            collection_name=collection_name,
+                            query=query,
+                            top_k=top_k
+                        )
+                        
+                        if chunks:
+                            all_chunks.extend(chunks)
+                    except Exception as e:
+                        print(f"⚠️ Error retrieving {section_name}: {str(e)}")
+                        continue
+                
+                # Deduplicate and merge chunks
+                if all_chunks:
+                    section_context[section_name] = "\n".join(list(dict.fromkeys(all_chunks))[:top_k*2])
+                else:
+                    section_context[section_name] = ""
+        
+        except Exception as e:
+            print(f"⚠️ Error in section retrieval: {str(e)}")
+        
+        return section_context
+    
+    def generate_expert_analysis(self, 
+                                 document_text: str,
+                                 filename: str,
+                                 collection_name: str = None) -> str:
+        """
+        Generate professional insurance consultant-quality report as markdown.
+        
+        Uses section-specific RAG retrieval, then generates markdown in ONE LLM call.
+        
+        Args:
+            document_text: Full policy document text
+            filename: Original PDF filename
+            collection_name: Optional Chroma collection for RAG
+            
+        Returns:
+            Markdown formatted consultant-quality report as string
+        """
+        print("🔍 Starting section-specific RAG retrieval...")
+        
+        # Section-specific retrieval queries
+        section_queries = {
+            "Policy Snapshot": [
+                "policy name insurance company UIN policy type",
+                "entry age family coverage eligibility",
+                "policy duration term period"
+            ],
+            "Coverage Details": [
+                "inpatient hospitalization ICU coverage",
+                "day care surgery procedures ambulance",
+                "domiciliary home treatment health checkup",
+                "organ donor cover modern treatment",
+                "coverage limits amount insured"
+            ],
+            "Financial Limits": [
+                "room rent limit capping",
+                "ICU limit daily limits",
+                "cataract surgery limits caps",
+                "disease specific limits restrictions",
+                "ambulance limit daily cash limit",
+                "sub-limit maximum limit"
+            ],
+            "Waiting Periods": [
+                "waiting period pre-existing diseases",
+                "cataract hernia joint replacement",
+                "maternity waiting period disease waiting",
+                "exclusion period continuation"
+            ],
+            "Exclusions": [
+                "exclusions not covered excluded conditions",
+                "disease exclusions specific exclusions",
+                "treatment not covered exclusion clause"
+            ],
+            "Claim Restrictions": [
+                "claim restriction room rent restriction",
+                "network hospital restriction reimbursement limit",
+                "claim filing deadline documentation requirement",
+                "proportionate deduction claim reduction"
+            ],
+            "Important Clauses": [
+                "renewal clause cancellation clause portability",
+                "migration free look period premium loading",
+                "grace period change sum insured",
+                "claim conditions claim settlement"
+            ]
+        }
+        
+        # Retrieve section-specific context
+        section_contexts = {}
+        if self.embedding_manager and collection_name:
+            section_contexts = self._retrieve_section_chunks(collection_name, section_queries, top_k=5)
+        
+        # Build section context string
+        context_sections = []
+        for section, content in section_contexts.items():
+            if content:
+                context_sections.append(f"## {section}\n{content}")
+        
+        merged_context = "\n\n".join(context_sections) if context_sections else document_text[:8000]
+        
+        print("📝 Generating professional consultant report...")
+        
+        system_prompt = """You are a Senior Insurance Consultant with 20+ years of experience analyzing health, life, motor, travel and commercial insurance policies.
 
-DOCUMENT TEXT:
-{document_text[:5000]}
+Your task is to generate a PROFESSIONAL INSURANCE ANALYSIS REPORT that helps customers make informed decisions.
 
-Return the information in this JSON format:
-{{
-  "policy_overview": "...",
-  "coverage_amount": "...",
-  "premium_amount": "...",
-  "policy_duration": "...",
-  "covered_items": "...",
-  "exclusions": "...",
-  "waiting_periods": "...",
-  "deductibles": "...",
-  "copay_clauses": "...",
-  "renewal_clauses": "...",
-  "cancellation_clauses": "...",
-  "major_risks": "...",
-  "overall_assessment": "..."
-}}"""
+CRITICAL REQUIREMENTS:
+1. Write like an insurance advisor, NOT a document summarizer
+2. Convert legal jargon to plain English
+3. FOCUS on customer impact, not policy wording
+4. HIGHLIGHT: limits, caps, restrictions, waiting periods, risks
+5. Use markdown formatting professionally
+6. Include page references where available
+7. Flag risks with ⚠️, benefits with ✅, restrictions with 🚫
+8. Provide financial analysis where possible
+9. Generate tables for comparative data
+10. NEVER be generic - extract actual numbers and specific terms
+
+MANDATORY SECTIONS (in this order):
+# POLICY SNAPSHOT
+- Policy name, company, type, UIN
+- Duration, entry age, sum insured options
+- Family eligibility
+
+# EXECUTIVE SUMMARY
+Explain in 200 words max:
+- What this policy is
+- Who it's designed for
+- Main strengths
+- Main limitations
+
+# COVERAGE ANALYSIS
+For each coverage: name, what's covered, financial limit, page ref
+
+# FINANCIAL CAPS AND SUB-LIMITS
+Create a table: Benefit | Limit | Customer Impact | Page
+Include room rent, ICU, cataract, surgery, disease-specific limits
+
+# WAITING PERIOD ANALYSIS
+Table: Condition | Duration | Risk Level | Page
+Then explain impact on customers in plain English
+
+# EXCLUSIONS ANALYSIS
+Table: Exclusion | Impact | Risk Level | Page
+Focus on exclusions affecting claims
+
+# CLAIM RESTRICTIONS
+Identify and explain:
+- Room rent restrictions
+- Proportionate deduction clauses
+- Network restrictions
+- Reimbursement limits
+- Claim filing deadlines
+- Documentation requirements
+
+# IMPORTANT CLAUSES
+Explain: Renewal, Cancellation, Portability, Migration, Free Look, Premium Loading, Change in SI, Grace Period
+
+# CUSTOMER RED FLAGS
+For each: Severity (LOW/MEDIUM/HIGH), Reason, Customer Impact
+
+# BEST FEATURES
+List top 10 strongest features with benefits
+
+# INSURANCE SCORECARD
+Coverage: X/10 | Claim Friendly: X/10 | Flexibility: X/10 | Transparency: X/10 | Waiting Periods: X/10 | Overall: X/10
+Include reasoning
+
+# FINAL RECOMMENDATION
+Suitable For | Not Suitable For | Major Advantages | Major Disadvantages (max 300 words)
+
+OUTPUT QUALITY:
+- Use tables whenever possible
+- Include actual numbers, not generic descriptions
+- Highlight financial caps clearly
+- Explain why each restriction matters
+- Make it decision-friendly"""
+        
+        user_message = f"""Generate a professional insurance analysis report for: {filename}
+
+POLICY INFORMATION FROM DOCUMENT:
+{merged_context}
+
+Create a comprehensive, consultant-quality report that helps customers understand:
+- Exactly what is covered and the limits
+- What waiting periods apply and their impact
+- Which exclusions matter most
+- Financial restrictions that affect claims
+- Whether this policy is right for them
+
+Be specific. Include numbers, amounts, and durations from the document.
+If something is not in the document, state "Not specified in the policy document"."""
         
         try:
             messages = [
@@ -95,56 +255,16 @@ Return the information in this JSON format:
             ]
             
             response = self.llm.invoke(messages)
-            response_text = response.content
+            markdown_report = response.content
             
-            # Parse JSON from response
-            try:
-                # Try to extract JSON from response
-                json_start = response_text.find('{')
-                json_end = response_text.rfind('}') + 1
-                if json_start != -1 and json_end > json_start:
-                    json_str = response_text[json_start:json_end]
-                    analysis = json.loads(json_str)
-                else:
-                    # If no JSON found, create structured response
-                    analysis = self._parse_text_response(response_text)
-            except json.JSONDecodeError:
-                analysis = self._parse_text_response(response_text)
-            
-            return analysis
+            print("✨ Professional report generated successfully!")
+            return markdown_report
             
         except Exception as e:
-            return {
-                "error": f"Failed to analyze policy: {str(e)}",
-                "policy_overview": "Error in analysis",
-                "coverage_amount": "Error",
-                "premium_amount": "Error",
-                "policy_duration": "Error",
-                "covered_items": "Error",
-                "exclusions": "Error",
-                "waiting_periods": "Error",
-                "deductibles": "Error",
-                "copay_clauses": "Error",
-                "renewal_clauses": "Error",
-                "cancellation_clauses": "Error",
-                "major_risks": "Error",
-                "overall_assessment": "Error"
-            }
-    
-    def _parse_text_response(self, text: str) -> Dict:
-        """Parse text response into structured format."""
-        return {
-            "policy_overview": "See analysis",
-            "coverage_amount": "See analysis",
-            "premium_amount": "See analysis",
-            "policy_duration": "See analysis",
-            "covered_items": "See analysis",
-            "exclusions": "See analysis",
-            "waiting_periods": "See analysis",
-            "deductibles": "See analysis",
-            "copay_clauses": "See analysis",
-            "renewal_clauses": "See analysis",
-            "cancellation_clauses": "See analysis",
-            "major_risks": "See analysis",
-            "overall_assessment": text[:500]
-        }
+            print(f"❌ Error generating report: {str(e)}")
+            error_report = f"""# Error Generating Insurance Analysis Report
+
+Failed to generate policy analysis: {str(e)}
+
+Please try again or contact support if the issue persists."""
+            return error_report
