@@ -6,7 +6,7 @@ Orchestrates PDF processing, embedding generation, and QA.
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, List
 import os
@@ -375,15 +375,16 @@ async def analyze_insurance_policy(request: AnalysisRequest):
         
         # Return PDF file
         clean_filename = filename.replace('.pdf', '')
-        return FileResponse(
+        return StreamingResponse(
             io.BytesIO(pdf_bytes),
             media_type="application/pdf",
-            filename=f"{clean_filename}_Analysis_Report.pdf"
+            headers={"Content-Disposition": f"attachment; filename={clean_filename}_Analysis_Report.pdf"}
         )
     
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error in analyze endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error analyzing document: {str(e)}")
 
 
