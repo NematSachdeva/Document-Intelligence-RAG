@@ -22,7 +22,7 @@ from modules.embeddings import EmbeddingManager
 from modules.qa import QAEngine
 from modules.summarizer import Summarizer
 from modules.insurance_analyzer import InsuranceAnalyzer
-from modules.report_generator import ReportGenerator
+from modules.pdf_reporter import ProfessionalPDFReporter
 
 # Load environment variables
 load_dotenv()
@@ -54,13 +54,74 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 embedding_manager = EmbeddingManager()
 qa_engine = QAEngine()
 summarizer = Summarizer()
-insurance_analyzer = InsuranceAnalyzer()
-report_generator = ReportGenerator()
+insurance_analyzer = InsuranceAnalyzer(embedding_manager=embedding_manager)
+pdf_reporter = ProfessionalPDFReporter()
 
 # Store document metadata in memory (in production, use database)
 documents_metadata = {}
 # Track the active document (single document mode for insurance policies)
 active_document_id = None
+
+
+# Helper Functions
+
+def parse_analysis_markdown(markdown_text: str) -> Dict:
+    """
+    Parse markdown report into sections for frontend display.
+    Returns a dictionary with section titles as keys and content as values.
+    """
+    sections = {
+        "dashboard": "",
+        "snapshot": "",
+        "coverage": "",
+        "financial_limits": "",
+        "waiting_periods": "",
+        "exclusions": "",
+        "claim_restrictions": "",
+        "important_clauses": "",
+        "recommendation": ""
+    }
+    
+    # Map section headers to keys (new professional structure)
+    section_map = {
+        "## Executive Dashboard": "dashboard",
+        "## Policy Snapshot": "snapshot",
+        "## Coverage Analysis": "coverage",
+        "## Financial Caps & Sub-Limits": "financial_limits",
+        "## Waiting Periods": "waiting_periods",
+        "## Exclusions & Risks": "exclusions",
+        "## Claim Restrictions": "claim_restrictions",
+        "## Important Clauses": "important_clauses",
+        "## Final Recommendation": "recommendation"
+    }
+    
+    current_section = None
+    current_content = []
+    lines = markdown_text.split('\n')
+    
+    for i, line in enumerate(lines):
+        # Check if this line starts a new section
+        section_found = False
+        for heading, key in section_map.items():
+            if line.strip() == heading.strip():
+                # Save previous section
+                if current_section and current_content:
+                    sections[current_section] = '\n'.join(current_content).strip()
+                current_section = key
+                current_content = []
+                section_found = True
+                break
+        
+        # If not a new section header, accumulate content
+        if not section_found and current_section is not None:
+            current_content.append(line)
+    
+    # Save last section
+    if current_section and current_content:
+        sections[current_section] = '\n'.join(current_content).strip()
+    
+    # Filter out empty sections
+    return {k: v for k, v in sections.items() if v.strip()}
 
 
 # Request/Response Models
@@ -88,6 +149,7 @@ class UploadResponse(BaseModel):
     pages: int
     chunks: int
     summary: Dict
+    analysis: Dict
     success: bool
 
 
@@ -190,6 +252,17 @@ async def upload_pdf(file: UploadFile = File(...)):
         full_text = " ".join(page_texts.values())
         summary_result = summarizer.generate_summary(full_text)
         
+        # Generate insurance analysis
+        print(f"Generating insurance analysis for document")
+        analysis_markdown = insurance_analyzer.generate_expert_analysis(
+            document_text=full_text,
+            filename=file.filename,
+            collection_name=collection_name
+        )
+        
+        # Parse analysis into sections for frontend display
+        analysis_sections = parse_analysis_markdown(analysis_markdown)
+        
         # Store metadata and set as active document
         documents_metadata[document_id] = {
             "filename": file.filename,
@@ -197,7 +270,9 @@ async def upload_pdf(file: UploadFile = File(...)):
             "chunks": len(chunks),
             "summary": summary_result,
             "collection_name": collection_name,
-            "full_text": full_text
+            "full_text": full_text,
+            "analysis_markdown": analysis_markdown,
+            "analysis_sections": analysis_sections
         }
         
         active_document_id = document_id
@@ -208,6 +283,7 @@ async def upload_pdf(file: UploadFile = File(...)):
             pages=num_pages,
             chunks=len(chunks),
             summary=summary_result,
+            analysis=analysis_sections,
             success=True
         )
     
@@ -334,15 +410,12 @@ async def delete_document(document_id: str):
         raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
 
 
-@app.post("/analyze")
-async def analyze_insurance_policy(request: AnalysisRequest):
+@app.post("/analysis")
+async def get_analysis_pdf(request: AnalysisRequest):
     """
-    Analyze insurance policy and generate downloadable PDF report.
-    
-    1. Get document and its full text
-    2. Extract insurance policy information using InsuranceAnalyzer
-    3. Generate professional PDF report
-    4. Return PDF file for download
+    Generate professional PDF report using ProfessionalPDFReporter.
+    Uses cached analysis sections from upload, does not regenerate.
+    Converts structured sections to professional PDF with tables, styling, and proper formatting.
     """
     try:
         document_id = request.document_id
@@ -352,29 +425,35 @@ async def analyze_insurance_policy(request: AnalysisRequest):
             raise HTTPException(status_code=404, detail="Document not found")
         
         metadata = documents_metadata[document_id]
-        full_text = metadata.get("full_text", "")
+        
+        if "analysis_sections" not in metadata:
+            raise HTTPException(status_code=404, detail="No analysis available. Please upload a document first.")
+        
+        # Get analysis sections and metadata
+        analysis_sections = metadata["analysis_sections"]
         filename = metadata["filename"]
         
-        if not full_text:
-            raise HTTPException(status_code=400, detail="Document text not available")
+        # Extract policy name and company from filename and analysis
+        policy_name = filename.replace('.pdf', '').strip()
+        company_name = "Insurance Company"  # Default; could be extracted from dashboard
         
-        print(f"Analyzing insurance policy: {document_id}")
+        # Create PDF in memory
+        pdf_filename = f"/tmp/{document_id}_analysis.pdf"
         
-        # Extract insurance policy information
-        analysis = insurance_analyzer.extract_policy_information(full_text)
-        
-        # Get summary for report
-        summary_text = metadata["summary"].get("summary", "") if metadata.get("summary") else ""
-        
-        # Generate PDF report
-        pdf_bytes = report_generator.generate_policy_report(
-            filename=filename,
-            analysis_data=analysis,
-            summary_text=summary_text
+        pdf_reporter.generate_pdf(
+            filename=pdf_filename,
+            policy_name=policy_name,
+            company_name=company_name,
+            analysis_sections=analysis_sections
         )
         
-        # Save analysis in metadata
-        metadata["analysis"] = analysis
+        # Read PDF and return
+        with open(pdf_filename, 'rb') as f:
+            pdf_bytes = f.read()
+        
+        # Clean up temp file
+        if os.path.exists(pdf_filename):
+            os.remove(pdf_filename)
         
         # Return PDF file
         clean_filename = filename.replace('.pdf', '')
@@ -387,26 +466,26 @@ async def analyze_insurance_policy(request: AnalysisRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in analyze endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error analyzing document: {str(e)}")
+        print(f"Error in analysis endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating PDF: {str(e)}")
 
 
 @app.get("/analysis/{document_id}")
 async def get_analysis(document_id: str):
-    """Get the stored analysis data for a document (JSON)."""
+    """Get the stored analysis markdown for a document."""
     try:
         if document_id not in documents_metadata:
             raise HTTPException(status_code=404, detail="Document not found")
         
         metadata = documents_metadata[document_id]
         
-        if "analysis" not in metadata:
+        if "analysis_markdown" not in metadata:
             raise HTTPException(status_code=404, detail="No analysis available. Please run analyze endpoint first.")
         
         return {
             "document_id": document_id,
             "filename": metadata["filename"],
-            "analysis": metadata["analysis"],
+            "analysis": metadata["analysis_markdown"],
             "success": True
         }
     

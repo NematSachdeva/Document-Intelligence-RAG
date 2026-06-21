@@ -40,3 +40,84 @@ code {
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+/* Markdown content styling */
+.markdown-content {
+  @apply text-slate-700;
+}
+
+.markdown-content table {
+  @apply w-full border-collapse my-4;
+}
+
+.markdown-content th,
+.markdown-content td {
+  @apply border border-slate-300 px-4 py-2;
+}
+
+.markdown-content th {
+  @apply bg-slate-100 font-semibold text-slate-900;
+}
+
+.markdown-content tbody tr:nth-child(odd) {
+  @apply bg-white;
+}
+
+.markdown-content tbody tr:nth-child(even) {
+  @apply bg-slate-50;
+}
+
+.markdown-content tbody tr:hover {
+  @apply bg-slate-100;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  @apply my-3 ml-6;
+}
+
+.markdown-content li {
+  @apply my-1 text-slate-700;
+}
+
+.markdown-content h1 {
+  @apply text-2xl font-bold my-4 text-slate-900;
+}
+
+.markdown-content h2 {
+  @apply text-xl font-bold my-3 text-slate-900;
+}
+
+.markdown-content h3 {
+  @apply text-lg font-bold my-2 text-slate-900;
+}
+
+.markdown-content p {
+  @apply my-2 leading-relaxed text-slate-700;
+}
+
+.markdown-content strong {
+  @apply font-bold text-slate-900;
+}
+
+.markdown-content em {
+  @apply italic text-slate-700;
+}
+
+.markdown-content code:not(pre code) {
+  @apply bg-slate-100 px-2 py-1 rounded text-sm font-mono text-red-600;
+}
+
+.markdown-content pre {
+  @apply bg-slate-800 text-slate-100 p-4 rounded-lg my-3 overflow-x-auto;
+}
+
+.markdown-content blockquote {
+  @apply border-l-4 border-slate-300 pl-4 my-3 italic text-slate-600;
+}
+
+.markdown-content hr {
+  @apply my-4 border-t border-slate-300;
+}
+
+

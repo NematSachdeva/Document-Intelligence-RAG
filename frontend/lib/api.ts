@@ -20,6 +20,17 @@ export interface UploadResponse {
     main_topics: string[]
     success: boolean
   }
+  analysis: {
+    dashboard: string
+    snapshot: string
+    coverage: string
+    financial_limits: string
+    waiting_periods: string
+    exclusions: string
+    claim_restrictions: string
+    important_clauses: string
+    recommendation: string
+  }
   success: boolean
 }
 

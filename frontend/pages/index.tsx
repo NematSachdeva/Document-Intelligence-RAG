@@ -1,22 +1,48 @@
-import React, { useState, useEffect } from 'react'
-import { FileText, Upload, Download, AlertCircle, MessageCircle, BarChart3 } from 'lucide-react'
+import React, { useState, useEffect, useRef } from 'react'
+import { FileText, Download, AlertCircle, MessageCircle, BarChart3, Send, RotateCcw, Loader } from 'lucide-react'
 import FileUpload from '../components/FileUpload'
-import ChatInterface from '../components/ChatInterface'
+import MarkdownRenderer from '../components/MarkdownRenderer'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../components/ui/accordion'
 import { Badge } from '../components/ui/badge'
 import { uploadPDF, askQuestion, listDocuments, healthCheck, UploadResponse, SummaryResponse, Citation, Document } from '../lib/api'
 
+interface ChatMessage {
+  id: string
+  type: 'question' | 'answer' | 'error'
+  content: string
+  citations?: Citation[]
+  timestamp: Date
+}
+
+interface AnalysisReport {
+  dashboard: string
+  snapshot: string
+  coverage: string
+  financial_limits: string
+  waiting_periods: string
+  exclusions: string
+  claim_restrictions: string
+  important_clauses: string
+  recommendation: string
+}
+
 export default function Home() {
   const [currentDocument, setCurrentDocument] = useState<UploadResponse | null>(null)
   const [documents, setDocuments] = useState<Document[]>([])
   const [summary, setSummary] = useState<SummaryResponse | null>(null)
-  const [chatHistory, setChatHistory] = useState<any[]>([])
+  const [analysis, setAnalysis] = useState<AnalysisReport | null>(null)
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false)
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string>('')
   const [apiError, setApiError] = useState<string>('')
   const [activeTab, setActiveTab] = useState('overview')
+  const [inputValue, setInputValue] = useState('')
+  const [lastFailedQuestion, setLastFailedQuestion] = useState<string | null>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const [isAnswering, setIsAnswering] = useState(false)
 
   useEffect(() => {
     const checkHealth = async () => {
@@ -43,13 +69,16 @@ export default function Home() {
   const handleFileUpload = async (file: File) => {
     setIsLoading(true)
     setError('')
+    setIsGeneratingReport(true)
 
     try {
       const response = await uploadPDF(file)
       if (response.success) {
         setCurrentDocument(response)
         setSummary(response.summary)
-        setChatHistory([])
+        setAnalysis(response.analysis)
+        setChatMessages([])
+        setLastFailedQuestion(null)
         setActiveTab('overview')
         await loadDocuments()
       } else {
@@ -59,34 +88,92 @@ export default function Home() {
       setError(err.response?.data?.detail || 'Error uploading PDF. Please try again.')
     } finally {
       setIsLoading(false)
+      setIsGeneratingReport(false)
     }
   }
 
   const handleAskQuestion = async (question: string) => {
     if (!currentDocument) return
 
+    // Clear previous error
+    setError('')
+    setLastFailedQuestion(null)
+
+    // Show user question immediately
+    const questionId = `q-${Date.now()}`
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: questionId,
+        type: 'question',
+        content: question,
+        timestamp: new Date()
+      }
+    ])
+
+    setIsAnswering(true)
+
     try {
       const response = await askQuestion(currentDocument.document_id, question)
+      
       if (response.success) {
-        setChatHistory((prev) => [
+        // Add assistant response to chat
+        setChatMessages((prev) => [
           ...prev,
-          { type: 'question', content: question, timestamp: new Date() },
-          { type: 'answer', content: response.answer, citations: response.citations, timestamp: new Date() }
+          {
+            id: `a-${Date.now()}`,
+            type: 'answer',
+            content: response.answer,
+            citations: response.citations,
+            timestamp: new Date()
+          }
         ])
       } else {
-        setError('Failed to get answer')
+        // Add error message to chat
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: `e-${Date.now()}`,
+            type: 'error',
+            content: 'Failed to get an answer. Please try again.',
+            timestamp: new Date()
+          }
+        ])
+        setLastFailedQuestion(question)
+        setError('API Error: Failed to process question')
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Error processing question')
+      // Add error message to chat
+      const errorMessage = err.response?.data?.detail || 'Error processing question. Please try again.'
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `e-${Date.now()}`,
+          type: 'error',
+          content: errorMessage,
+          timestamp: new Date()
+        }
+      ])
+      setLastFailedQuestion(question)
+      setError(`API Error: ${errorMessage}`)
+    } finally {
+      setIsAnswering(false)
+      setInputValue('')
     }
   }
+
+  // Auto-scroll to latest message
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatMessages])
 
   const handleGenerateReport = async () => {
     if (!currentDocument) return
 
     setIsLoading(true)
     try {
-      const response = await fetch('http://localhost:8000/analyze', {
+      // Get the analysis PDF from backend (already generated and cached during upload)
+      const response = await fetch('http://localhost:8000/analysis', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ document_id: currentDocument.document_id })
@@ -94,6 +181,8 @@ export default function Home() {
 
       if (response.ok) {
         const blob = await response.blob()
+        
+        // Download the PDF
         const url = window.URL.createObjectURL(blob)
         const link = document.createElement('a')
         link.href = url
@@ -103,10 +192,12 @@ export default function Home() {
         document.body.removeChild(link)
         window.URL.revokeObjectURL(url)
       } else {
-        setError('Failed to generate report')
+        const errorData = await response.json().catch(() => ({}))
+        setError(errorData.detail || 'Failed to generate report')
       }
-    } catch (err) {
-      setError('Error generating report')
+    } catch (err: any) {
+      console.error('Report generation error:', err)
+      setError('Error generating report: ' + (err.message || 'Unknown error'))
     } finally {
       setIsLoading(false)
     }
@@ -145,7 +236,23 @@ export default function Home() {
                         filename: doc.filename,
                         pages: doc.pages,
                         chunks: doc.chunks,
-                        summary: {},
+                        summary: {
+                          summary: '',
+                          key_points: [],
+                          main_topics: [],
+                          success: false
+                        },
+                        analysis: {
+                          dashboard: '',
+                          snapshot: '',
+                          coverage: '',
+                          financial_limits: '',
+                          waiting_periods: '',
+                          exclusions: '',
+                          claim_restrictions: '',
+                          important_clauses: '',
+                          recommendation: ''
+                        },
                         success: true
                       })
                       setActiveTab('overview')
@@ -324,44 +431,91 @@ export default function Home() {
                 <CardDescription>Ask questions about your insurance policy</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {/* Chat Messages */}
+                {/* Chat Messages Container */}
                 <div className="bg-slate-50 rounded-lg border border-slate-200 p-4 min-h-96 max-h-96 overflow-y-auto space-y-4">
-                  {chatHistory.length === 0 ? (
+                  {chatMessages.length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-500">
                       <MessageCircle className="h-12 w-12 mb-2 opacity-30" />
                       <p>No questions asked yet</p>
                       <p className="text-sm">Start by asking a question about the policy</p>
                     </div>
                   ) : (
-                    chatHistory.map((msg, i) => (
-                      <div key={i} className={`flex ${msg.type === 'question' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-xs px-4 py-2 rounded-lg ${
-                          msg.type === 'question'
-                            ? 'bg-blue-600 text-white rounded-br-none'
-                            : 'bg-white border border-slate-200 text-slate-900 rounded-bl-none'
-                        }`}>
-                          <p className="text-sm">{msg.content}</p>
-                          {msg.type === 'answer' && msg.citations && msg.citations.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {msg.citations.map((c: Citation, j: number) => (
-                                <Badge key={j} variant="secondary" className="text-xs cursor-pointer hover:bg-slate-300">
-                                  Page {c.page || 'N/A'}
-                                </Badge>
-                              ))}
-                            </div>
-                          )}
+                    <>
+                      {chatMessages.map((msg: ChatMessage) => (
+                        <div key={msg.id} className={`flex ${msg.type === 'question' ? 'justify-end' : 'justify-start'}`}>
+                          <div className={`max-w-xs px-4 py-2 rounded-lg ${
+                            msg.type === 'question'
+                              ? 'bg-blue-600 text-white rounded-br-none'
+                              : msg.type === 'answer'
+                              ? 'bg-white border border-slate-200 text-slate-900 rounded-bl-none'
+                              : 'bg-red-50 border border-red-200 text-red-900 rounded-bl-none'
+                          }`}>
+                            <p className="text-sm">{msg.content}</p>
+                            {msg.type === 'answer' && msg.citations && msg.citations.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {msg.citations.map((c: Citation, j: number) => (
+                                  <Badge key={j} variant="secondary" className="text-xs cursor-pointer hover:bg-slate-300">
+                                    {c.page_number ? `Page ${c.page_number}` : 'Source'}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))
+                      ))}
+                      {isAnswering && (
+                        <div className="flex justify-start">
+                          <div className="max-w-xs px-4 py-2 rounded-lg bg-white border border-slate-200 text-slate-900 rounded-bl-none flex items-center gap-2">
+                            <Loader className="h-4 w-4 animate-spin text-blue-600" />
+                            <p className="text-sm">Generating answer...</p>
+                          </div>
+                        </div>
+                      )}
+                      <div ref={messagesEndRef} />
+                    </>
                   )}
                 </div>
 
-                {/* Input */}
-                <ChatInterface
-                  onSendMessage={handleAskQuestion}
-                  isLoading={isLoading}
-                  error=""
-                />
+                {/* Chat Input */}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && inputValue.trim() && !isAnswering) {
+                        handleAskQuestion(inputValue)
+                      }
+                    }}
+                    placeholder="Ask a question about the policy..."
+                    disabled={isAnswering}
+                    className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
+                  />
+                  <button
+                    onClick={() => {
+                      if (inputValue.trim()) {
+                        handleAskQuestion(inputValue)
+                      }
+                    }}
+                    disabled={isAnswering || !inputValue.trim()}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-400 transition flex items-center gap-2 font-medium"
+                  >
+                    <Send className="h-4 w-4" />
+                    Send
+                  </button>
+                </div>
+
+                {/* Retry Button - Show only if there was a failed question */}
+                {lastFailedQuestion && (
+                  <button
+                    onClick={() => handleAskQuestion(lastFailedQuestion)}
+                    disabled={isAnswering}
+                    className="w-full px-4 py-2 border border-yellow-300 bg-yellow-50 text-yellow-900 rounded-lg hover:bg-yellow-100 transition font-medium flex items-center justify-center gap-2"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    Retry: "{lastFailedQuestion}"
+                  </button>
+                )}
 
                 {/* Suggested Questions */}
                 <div className="pt-4 border-t border-slate-200">
@@ -372,11 +526,11 @@ export default function Home() {
                       'What are the waiting periods?',
                       'What is excluded?',
                       'How do I claim?'
-                    ].map((q, i) => (
+                    ].map((q: string, i: number) => (
                       <button
                         key={i}
                         onClick={() => handleAskQuestion(q)}
-                        disabled={isLoading}
+                        disabled={isAnswering}
                         className="text-left text-xs p-2 rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition disabled:opacity-50 font-medium"
                       >
                         {q}
@@ -395,82 +549,117 @@ export default function Home() {
                 <div className="flex items-center justify-between">
                   <div>
                     <CardTitle>Insurance Analysis Report</CardTitle>
-                    <CardDescription>Professional policy analysis with recommendations</CardDescription>
+                    <CardDescription>Professional policy analysis - fact-based and consultant-quality</CardDescription>
                   </div>
                   <button
                     onClick={handleGenerateReport}
-                    disabled={isLoading}
+                    disabled={isGeneratingReport || !analysis}
                     className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-400 transition font-medium"
                   >
                     <Download className="h-4 w-4" />
-                    {isLoading ? 'Generating...' : 'Download PDF'}
+                    {isGeneratingReport ? 'Generating...' : 'Download PDF'}
                   </button>
                 </div>
               </CardHeader>
               <CardContent>
-                <Accordion type="single" collapsible className="w-full">
-                  <AccordionItem value="snapshot">
-                    <AccordionTrigger>Policy Snapshot</AccordionTrigger>
-                    <AccordionContent>
-                      <p className="text-slate-700">Overview of the insurance policy including name, company, type, and key details.</p>
-                      <p className="text-sm text-slate-500 mt-2">Click Download PDF to see the complete information</p>
-                    </AccordionContent>
-                  </AccordionItem>
+                {isGeneratingReport ? (
+                  // Loading skeleton
+                  <div className="space-y-4">
+                    {[1, 2, 3, 4, 5].map((i) => (
+                      <div key={i} className="bg-slate-200 animate-pulse rounded-lg h-12" />
+                    ))}
+                  </div>
+                ) : analysis ? (
+                  // Display actual analysis sections with markdown rendering
+                  <div className="space-y-6">
+                    {analysis.dashboard && (
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <h3 className="font-semibold text-blue-900 mb-3">Executive Dashboard</h3>
+                        <MarkdownRenderer content={analysis.dashboard} className="text-sm" />
+                      </div>
+                    )}
 
-                  <AccordionItem value="coverage">
-                    <AccordionTrigger>Coverage Analysis</AccordionTrigger>
-                    <AccordionContent>
-                      <p className="text-slate-700">Detailed breakdown of all coverages including financial limits and restrictions.</p>
-                      <p className="text-sm text-slate-500 mt-2">Click Download PDF to see the complete analysis</p>
-                    </AccordionContent>
-                  </AccordionItem>
+                    <Accordion type="single" collapsible className="w-full">
+                      {analysis.snapshot && (
+                        <AccordionItem value="snapshot">
+                          <AccordionTrigger className="text-base font-semibold">Policy Snapshot</AccordionTrigger>
+                          <AccordionContent>
+                            <MarkdownRenderer content={analysis.snapshot} />
+                          </AccordionContent>
+                        </AccordionItem>
+                      )}
 
-                  <AccordionItem value="limits">
-                    <AccordionTrigger>Financial Caps & Sub-Limits</AccordionTrigger>
-                    <AccordionContent>
-                      <p className="text-slate-700">Table of all financial limitations including room rent, ICU limits, and disease-specific caps.</p>
-                      <p className="text-sm text-slate-500 mt-2">Click Download PDF to see the complete breakdown</p>
-                    </AccordionContent>
-                  </AccordionItem>
+                      {analysis.coverage && (
+                        <AccordionItem value="coverage">
+                          <AccordionTrigger className="text-base font-semibold">Coverage Analysis</AccordionTrigger>
+                          <AccordionContent>
+                            <MarkdownRenderer content={analysis.coverage} />
+                          </AccordionContent>
+                        </AccordionItem>
+                      )}
 
-                  <AccordionItem value="waiting">
-                    <AccordionTrigger>Waiting Periods</AccordionTrigger>
-                    <AccordionContent>
-                      <p className="text-slate-700">Analysis of all waiting periods and their impact on your coverage.</p>
-                      <p className="text-sm text-slate-500 mt-2">Click Download PDF to see the complete waiting period analysis</p>
-                    </AccordionContent>
-                  </AccordionItem>
+                      {analysis.financial_limits && (
+                        <AccordionItem value="limits">
+                          <AccordionTrigger className="text-base font-semibold">Financial Caps & Sub-Limits</AccordionTrigger>
+                          <AccordionContent>
+                            <MarkdownRenderer content={analysis.financial_limits} />
+                          </AccordionContent>
+                        </AccordionItem>
+                      )}
 
-                  <AccordionItem value="exclusions">
-                    <AccordionTrigger>Exclusions & Risks</AccordionTrigger>
-                    <AccordionContent>
-                      <p className="text-slate-700">Comprehensive list of all exclusions and high-risk factors flagged for your attention.</p>
-                      <p className="text-sm text-slate-500 mt-2">Click Download PDF to see the complete exclusions analysis</p>
-                    </AccordionContent>
-                  </AccordionItem>
+                      {analysis.waiting_periods && (
+                        <AccordionItem value="waiting">
+                          <AccordionTrigger className="text-base font-semibold">Waiting Periods</AccordionTrigger>
+                          <AccordionContent>
+                            <MarkdownRenderer content={analysis.waiting_periods} />
+                          </AccordionContent>
+                        </AccordionItem>
+                      )}
 
-                  <AccordionItem value="claims">
-                    <AccordionTrigger>Claim Restrictions</AccordionTrigger>
-                    <AccordionContent>
-                      <p className="text-slate-700">Important claim conditions and restrictions that may affect your claim settlement.</p>
-                      <p className="text-sm text-slate-500 mt-2">Click Download PDF to see the complete claim analysis</p>
-                    </AccordionContent>
-                  </AccordionItem>
+                      {analysis.exclusions && (
+                        <AccordionItem value="exclusions">
+                          <AccordionTrigger className="text-base font-semibold">Exclusions</AccordionTrigger>
+                          <AccordionContent>
+                            <MarkdownRenderer content={analysis.exclusions} />
+                          </AccordionContent>
+                        </AccordionItem>
+                      )}
 
-                  <AccordionItem value="recommendation">
-                    <AccordionTrigger>Final Recommendation</AccordionTrigger>
-                    <AccordionContent>
-                      <p className="text-slate-700">Professional recommendation including suitable customers, advantages, and disadvantages.</p>
-                      <p className="text-sm text-slate-500 mt-2">Click Download PDF to see the complete recommendation</p>
-                    </AccordionContent>
-                  </AccordionItem>
-                </Accordion>
+                      {analysis.claim_restrictions && (
+                        <AccordionItem value="claims">
+                          <AccordionTrigger className="text-base font-semibold">Claim Restrictions</AccordionTrigger>
+                          <AccordionContent>
+                            <MarkdownRenderer content={analysis.claim_restrictions} />
+                          </AccordionContent>
+                        </AccordionItem>
+                      )}
 
-                <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                  <p className="text-sm text-blue-900">
-                    <strong>Note:</strong> The comprehensive report is generated on-demand and includes all policy sections with professional analysis. Click Download PDF to generate the full report.
-                  </p>
-                </div>
+                      {analysis.important_clauses && (
+                        <AccordionItem value="clauses">
+                          <AccordionTrigger className="text-base font-semibold">Key Clauses</AccordionTrigger>
+                          <AccordionContent>
+                            <MarkdownRenderer content={analysis.important_clauses} />
+                          </AccordionContent>
+                        </AccordionItem>
+                      )}
+
+                      {analysis.recommendation && (
+                        <AccordionItem value="recommendation">
+                          <AccordionTrigger className="text-base font-semibold">Final Recommendation</AccordionTrigger>
+                          <AccordionContent>
+                            <MarkdownRenderer content={analysis.recommendation} />
+                          </AccordionContent>
+                        </AccordionItem>
+                      )}
+                    </Accordion>
+                  </div>
+                ) : (
+                  <div className="text-center py-12">
+                    <FileText className="h-12 w-12 mx-auto text-slate-300 mb-4" />
+                    <p className="text-slate-600 font-medium">No analysis available</p>
+                    <p className="text-slate-500 text-sm">Upload a document to generate an insurance analysis report</p>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
