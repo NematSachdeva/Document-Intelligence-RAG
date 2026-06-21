@@ -461,30 +461,18 @@ class ProfessionalPDFReporter:
         
         # Reset story to prevent duplication from previous generations
         self.story = []
+        print(f"[PDF DEBUG] Starting PDF generation")
+        print(f"[PDF DEBUG] Story reset, length: {len(self.story)}")
         
-        class FooterCanvas(canvas.Canvas):
-            def __init__(self, *args, **kwargs):
-                canvas.Canvas.__init__(self, *args, **kwargs)
-                self.pages = []
-
-            def showPage(self):
-                self.pages.append(dict(self.__dict__))
-                canvas.Canvas.showPage(self)
-
-            def save(self):
-                page_count = len(self.pages)
-                for page_num, page in enumerate(self.pages, 1):
-                    self.__dict__.update(page)
-                    self.draw_page_decorations(page_num, page_count)
-                    canvas.Canvas.showPage(self)
-                canvas.Canvas.save(self)
-
-            def draw_page_decorations(self, page_num, total_pages):
-                """Add page number in footer."""
-                self.setFont("Helvetica", 7)
-                self.setFillColor(HexColor('#94a3b8'))
-                page_text = f"Page {page_num} of {total_pages}"
-                self.drawRightString(letter[0] - 0.5 * inch, 0.25 * inch, page_text)
+        def add_page_number(canvas_obj, doc):
+            """Callback to add page numbers to each page."""
+            canvas_obj.saveState()
+            canvas_obj.setFont("Helvetica", 7)
+            canvas_obj.setFillColor(HexColor('#94a3b8'))
+            page_num = canvas_obj.getPageNumber()
+            page_text = f"Page {page_num}"
+            canvas_obj.drawRightString(letter[0] - 0.5 * inch, 0.25 * inch, page_text)
+            canvas_obj.restoreState()
         
         doc = SimpleDocTemplate(
             filename,
@@ -497,38 +485,51 @@ class ProfessionalPDFReporter:
         )
         
         # Build story
+        print(f"[PDF DEBUG] Before title page: {len(self.story)} elements")
         self.add_title_page(policy_name, company_name, datetime.now().strftime('%B %d, %Y'))
+        print(f"[PDF DEBUG] After title page: {len(self.story)} elements")
         
         if analysis_sections.get('dashboard'):
             self.add_executive_dashboard(analysis_sections['dashboard'])
+            print(f"[PDF DEBUG] After dashboard: {len(self.story)} elements")
         
         if analysis_sections.get('snapshot'):
             self.add_snapshot_table(analysis_sections['snapshot'])
+            print(f"[PDF DEBUG] After snapshot: {len(self.story)} elements")
         
         if analysis_sections.get('coverage'):
             self.add_coverage_table(analysis_sections['coverage'])
+            print(f"[PDF DEBUG] After coverage: {len(self.story)} elements")
         
         if analysis_sections.get('financial_limits'):
             self.add_financial_caps_table(analysis_sections['financial_limits'])
+            print(f"[PDF DEBUG] After financial_limits: {len(self.story)} elements")
         
         if analysis_sections.get('waiting_periods'):
             self.add_waiting_periods_table(analysis_sections['waiting_periods'])
+            print(f"[PDF DEBUG] After waiting_periods: {len(self.story)} elements")
         
         if analysis_sections.get('exclusions'):
             self.add_exclusions_table(analysis_sections['exclusions'])
+            print(f"[PDF DEBUG] After exclusions: {len(self.story)} elements")
         
         if analysis_sections.get('claim_restrictions'):
             self.add_claim_restrictions_table(analysis_sections['claim_restrictions'])
+            print(f"[PDF DEBUG] After claim_restrictions: {len(self.story)} elements")
         
         if analysis_sections.get('important_clauses'):
             self.add_key_clauses(analysis_sections['important_clauses'])
+            print(f"[PDF DEBUG] After important_clauses: {len(self.story)} elements")
         
         if analysis_sections.get('recommendation'):
             self.add_recommendation(analysis_sections['recommendation'])
+            print(f"[PDF DEBUG] After recommendation: {len(self.story)} elements")
         
         # Debug: Log story size before building
         print(f"[PDF] Story elements count: {len(self.story)}")
         print(f"[PDF] Sections included: {list(analysis_sections.keys())}")
+        print(f"[PDF DEBUG] About to call doc.build()")
         
-        # Build with page numbers
-        doc.build(self.story, canvasmaker=FooterCanvas)
+        # Build with page numbers callback
+        doc.build(self.story, onFirstPage=add_page_number, onLaterPages=add_page_number)
+        print(f"[PDF DEBUG] doc.build() completed")

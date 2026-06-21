@@ -420,7 +420,9 @@ async def get_analysis_pdf(request: AnalysisRequest):
     Converts structured sections to professional PDF with tables, styling, and proper formatting.
     """
     try:
+        print(f"\n[ANALYSIS] ===== PDF Generation Request Started =====")
         document_id = request.document_id
+        print(f"[ANALYSIS] Document ID: {document_id}")
         
         # Validate document exists
         if document_id not in documents_metadata:
@@ -435,6 +437,9 @@ async def get_analysis_pdf(request: AnalysisRequest):
         analysis_sections = metadata["analysis_sections"]
         filename = metadata["filename"]
         
+        print(f"[ANALYSIS] Filename: {filename}")
+        print(f"[ANALYSIS] Sections to include: {list(analysis_sections.keys())}")
+        
         # Extract policy name and company from filename and analysis
         policy_name = filename.replace('.pdf', '').strip()
         company_name = "Insurance Company"  # Default; could be extracted from dashboard
@@ -443,21 +448,28 @@ async def get_analysis_pdf(request: AnalysisRequest):
         pdf_filename = f"/tmp/{document_id}_analysis.pdf"
         
         # Create a fresh reporter instance for each PDF generation
+        print(f"[ANALYSIS] Creating new ProfessionalPDFReporter instance")
         pdf_reporter = ProfessionalPDFReporter()
+        print(f"[ANALYSIS] Calling pdf_reporter.generate_pdf()")
         pdf_reporter.generate_pdf(
             filename=pdf_filename,
             policy_name=policy_name,
             company_name=company_name,
             analysis_sections=analysis_sections
         )
+        print(f"[ANALYSIS] PDF generation completed")
         
         # Read PDF and return
         with open(pdf_filename, 'rb') as f:
             pdf_bytes = f.read()
         
+        print(f"[ANALYSIS] PDF size: {len(pdf_bytes)} bytes")
+        
         # Clean up temp file
         if os.path.exists(pdf_filename):
             os.remove(pdf_filename)
+        
+        print(f"[ANALYSIS] ===== PDF Generation Request Completed =====\n")
         
         # Return PDF file
         clean_filename = filename.replace('.pdf', '')
@@ -470,7 +482,9 @@ async def get_analysis_pdf(request: AnalysisRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in analysis endpoint: {str(e)}")
+        print(f"[ANALYSIS] Error in analysis endpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error generating PDF: {str(e)}")
 
 
