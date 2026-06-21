@@ -55,7 +55,7 @@ embedding_manager = EmbeddingManager()
 qa_engine = QAEngine()
 summarizer = Summarizer()
 insurance_analyzer = InsuranceAnalyzer(embedding_manager=embedding_manager)
-pdf_reporter = ProfessionalPDFReporter()
+# Don't create a global pdf_reporter instance - create new one per request
 
 # Store document metadata in memory (in production, use database)
 documents_metadata = {}
@@ -82,16 +82,16 @@ def parse_analysis_markdown(markdown_text: str) -> Dict:
         "recommendation": ""
     }
     
-    # Map section headers to keys (new professional structure)
+    # Map section headers to keys - MUST MATCH what insurance_analyzer.py generates
     section_map = {
         "## Executive Dashboard": "dashboard",
         "## Policy Snapshot": "snapshot",
         "## Coverage Analysis": "coverage",
         "## Financial Caps & Sub-Limits": "financial_limits",
         "## Waiting Periods": "waiting_periods",
-        "## Exclusions & Risks": "exclusions",
+        "## Exclusions": "exclusions",  # Fixed: was "## Exclusions & Risks"
         "## Claim Restrictions": "claim_restrictions",
-        "## Important Clauses": "important_clauses",
+        "## Key Clauses": "important_clauses",  # Fixed: was "## Important Clauses"
         "## Final Recommendation": "recommendation"
     }
     
@@ -121,7 +121,9 @@ def parse_analysis_markdown(markdown_text: str) -> Dict:
         sections[current_section] = '\n'.join(current_content).strip()
     
     # Filter out empty sections
-    return {k: v for k, v in sections.items() if v.strip()}
+    filtered = {k: v for k, v in sections.items() if v.strip()}
+    print(f"[Parse] Parsed sections: {list(filtered.keys())}")
+    return filtered
 
 
 # Request/Response Models
@@ -437,9 +439,11 @@ async def get_analysis_pdf(request: AnalysisRequest):
         policy_name = filename.replace('.pdf', '').strip()
         company_name = "Insurance Company"  # Default; could be extracted from dashboard
         
-        # Create PDF in memory
+        # Create PDF in memory with fresh reporter instance
         pdf_filename = f"/tmp/{document_id}_analysis.pdf"
         
+        # Create a fresh reporter instance for each PDF generation
+        pdf_reporter = ProfessionalPDFReporter()
         pdf_reporter.generate_pdf(
             filename=pdf_filename,
             policy_name=policy_name,

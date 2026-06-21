@@ -131,7 +131,7 @@ class InsuranceAnalyzer:
             "exclusions not covered",
             "claim process restrictions"
         ]
-        chunks, _ = self._retrieve_section_chunks(collection_name, dashboard_queries, top_k=2)
+        chunks, _ = self._retrieve_section_chunks(collection_name, dashboard_queries, top_k=1)
         
         dashboard_system = """CRITICAL: Only use facts explicitly stated in the provided policy text.
 Generate ONLY this exact format with ratings 1-10:
@@ -160,7 +160,7 @@ RULES:
         # ===== POLICY SNAPSHOT =====
         print("📋 Policy Snapshot...")
         snapshot_queries = ["policy name company type UIN", "entry age sum insured duration term"]
-        chunks, _ = self._retrieve_section_chunks(collection_name, snapshot_queries, top_k=2)
+        chunks, _ = self._retrieve_section_chunks(collection_name, snapshot_queries, top_k=1)
         
         snapshot_system = """Extract ONLY facts stated in policy. Create compact table:
 | Field | Value |
@@ -194,7 +194,7 @@ NO assumptions. NO generic details."""
             "outpatient procedures day care",
             "additional benefits covered"
         ]
-        chunks, _ = self._retrieve_section_chunks(collection_name, coverage_queries, top_k=3)
+        chunks, _ = self._retrieve_section_chunks(collection_name, coverage_queries, top_k=2)
         
         coverage_system = """Extract coverages from policy. Create table:
 | Coverage | Limit/Scope | Customer Impact |
@@ -228,7 +228,7 @@ RULES:
             "surgery limit cataract hernia",
             "ambulance limit daily cash"
         ]
-        chunks, _ = self._retrieve_section_chunks(collection_name, limits_queries, top_k=3)
+        chunks, _ = self._retrieve_section_chunks(collection_name, limits_queries, top_k=2)
         
         limits_system = """Extract financial caps. Create table:
 | Cap/Limit | Amount | Impact |
@@ -260,7 +260,7 @@ RULES:
             "maternity waiting period",
             "specific disease waiting period"
         ]
-        chunks, _ = self._retrieve_section_chunks(collection_name, waiting_queries, top_k=3)
+        chunks, _ = self._retrieve_section_chunks(collection_name, waiting_queries, top_k=2)
         
         waiting_system = """Extract waiting periods. Create table:
 | Condition | Duration | Impact |
@@ -291,7 +291,7 @@ RULES:
             "disease exclusion treatment exclusion",
             "what is not covered exclusion clause"
         ]
-        chunks, _ = self._retrieve_section_chunks(collection_name, exclusion_queries, top_k=3)
+        chunks, _ = self._retrieve_section_chunks(collection_name, exclusion_queries, top_k=2)
         
         exclusion_system = """MANDATORY SECTION. Extract exclusions. Create table:
 | Exclusion | Impact |
@@ -419,12 +419,20 @@ RULES:
         
         rec_query = "Create recommendation based ONLY on policy terms."
         
-        sections["Final Recommendation"] = self._generate_section(
-            "Final Recommendation",
-            rec_system,
-            "\n".join(chunks) if chunks else document_text[11800:13500],
-            rec_query
-        )
+        try:
+            sections["Final Recommendation"] = self._generate_section(
+                "Final Recommendation",
+                rec_system,
+                "\n".join(chunks) if chunks else document_text[11800:13500],
+                rec_query
+            )
+        except Exception as e:
+            if "rate_limit" in str(e).lower() or "429" in str(e):
+                print(f"⚠️  Final Recommendation generation failed: Rate limit reached")
+                sections["Final Recommendation"] = "Final Recommendation unavailable due to model rate limits. Please check the policy directly for suitability."
+            else:
+                print(f"⚠️  Final Recommendation generation failed: {str(e)}")
+                sections["Final Recommendation"] = "Final Recommendation unavailable due to generation error. Please check the policy directly for suitability."
         
         # ===== BUILD REPORT =====
         print(f"\n{'='*60}")

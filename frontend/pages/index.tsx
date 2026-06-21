@@ -47,14 +47,21 @@ export default function Home() {
   useEffect(() => {
     const checkHealth = async () => {
       try {
-        await healthCheck()
+        console.log('[Health Check] Starting...')
+        const response = await healthCheck()
+        console.log('[Health Check] Response:', response)
         setApiError('')
         loadDocuments()
       } catch (err) {
-        setApiError('Cannot connect to backend API. Make sure the server is running.')
+        console.log('[Health Check] Failed:', err)
+        // Don't set persistent error here - only show error if API requests actually fail
+        // This prevents false positives during startup
       }
     }
-    checkHealth()
+    
+    // Small delay to allow backend to start
+    const timer = setTimeout(checkHealth, 1000)
+    return () => clearTimeout(timer)
   }, [])
 
   const loadDocuments = async () => {
@@ -80,12 +87,18 @@ export default function Home() {
         setChatMessages([])
         setLastFailedQuestion(null)
         setActiveTab('overview')
+        // Clear any API errors if upload succeeds
+        setApiError('')
         await loadDocuments()
       } else {
         setError('Failed to upload PDF')
       }
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Error uploading PDF. Please try again.')
+      // Only set API error if it's a connection error
+      if (err.message === 'Network Error' || err.code === 'ECONNREFUSED') {
+        setApiError('Cannot connect to backend API. Make sure the server is running.')
+      }
     } finally {
       setIsLoading(false)
       setIsGeneratingReport(false)
@@ -303,10 +316,16 @@ export default function Home() {
         {apiError && (
           <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
             <AlertCircle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
-            <div>
+            <div className="flex-1">
               <p className="text-sm font-medium text-red-900">Backend Connection Error</p>
               <p className="text-sm text-red-700 mt-1">{apiError}</p>
             </div>
+            <button
+              onClick={() => setApiError('')}
+              className="text-red-600 hover:text-red-800 font-medium text-sm"
+            >
+              Dismiss
+            </button>
           </div>
         )}
 

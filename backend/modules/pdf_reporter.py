@@ -459,6 +459,9 @@ class ProfessionalPDFReporter:
     def generate_pdf(self, filename, policy_name, company_name, analysis_sections):
         """Generate professional PDF with page numbers."""
         
+        # Reset story to prevent duplication from previous generations
+        self.story = []
+        
         class FooterCanvas(canvas.Canvas):
             def __init__(self, *args, **kwargs):
                 canvas.Canvas.__init__(self, *args, **kwargs)
@@ -522,6 +525,10 @@ class ProfessionalPDFReporter:
         
         if analysis_sections.get('recommendation'):
             self.add_recommendation(analysis_sections['recommendation'])
+        
+        # Debug: Log story size before building
+        print(f"[PDF] Story elements count: {len(self.story)}")
+        print(f"[PDF] Sections included: {list(analysis_sections.keys())}")
         
         # Build with page numbers
         doc.build(self.story, canvasmaker=FooterCanvas)
